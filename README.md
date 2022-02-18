@@ -1,2 +1,2 @@
-# py-pinedio-usb-lora-usbiox
-Python wrapper for Pinedio USB LoRa adapter Windows USBIOX.dll
+# py-pinedio-usb-lora-ch341dll
+Python wrapper for Pinedio USB LoRa adapter Windows CH341DLL.dll
