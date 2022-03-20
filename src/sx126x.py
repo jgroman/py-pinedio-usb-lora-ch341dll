@@ -299,7 +299,7 @@ class Sx126x:
           the maximum supported value for the SX1262 to achieve +22 dBm output power.
         - deviceSel is used to select either the SX1261 or the SX1262.
         """
-        cmd_bytes = b'\x95' 
+        cmd_bytes = b'\x95'
         cmd_bytes += paDutyCycle & 0x07
         cmd_bytes += hpMax & 0x07
         cmd_bytes += deviceSel & 0x01
@@ -445,78 +445,321 @@ class Sx126x:
             'IrqStatus': cmd_result[2:],
         }
 
+    @trace
+    def ClearIrqStatus(self, ClearIrqParam: int) -> None:
+        """
+        This function clears an IRQ flag in the IRQ register by setting to 1 
+        the bit of ClearIrqParam corresponding to the same position as the IRQ flag 
+        to be cleared. As an example, if bit 0 of ClearIrqParam is set to 1 then 
+        IRQ flag at bit 0 of IRQ register is cleared.
+        If a DIO is mapped to one single IRQ source, the DIO is cleared if 
+        the corresponding bit in the IRQ register is cleared. If DIO is set to 0 
+        with several IRQ sources, then the DIO remains set to one until all bits 
+        mapped to the DIO in the IRQ register are cleared.
+        """
+        cmd_bytes = b'\x02'
+        cmd_bytes += ClearIrqParam.to_bytes(2, 'big')
+        self._send_command(cmd_bytes)
+
+    @trace
+    def SetDIO2AsRfSwitchCtrl(self, enable :int) -> None:
+        """
+        This command is used to configure DIO2 so that it can be used to control 
+        an external RF switch.
+        When controlling the external RX switch, the pin DIO2 will toggle accordingly 
+        to the internal state machine. DIO2 will be asserted high a few microseconds 
+        before the ramp-up of the PA and will go bes et to zero after the ramp-down 
+        of the PA.
+        Enable:
+        0 - DIO2 is free to be used as an IRQ
+        1 - DIO2 is selected to be used to control an RF switch. In this case:
+            DIO2 = 0 in SLEEP, STDBY_RX, STDBY_XOSC, FS and RX modes, 
+            DIO2 = 1 in TX mode
+        """
+        self._send_command(bytes([0x9D, enable & 0x01]))
+
+    @trace
+    def SetDIO3AsTCXOCtrl(self, tcxoVoltage: int, delay: int) -> None:
+        """
+        This command is used to configure the chip for an external TCXO reference 
+        voltage controlled by DIO3.
+        When this command is used, the device now controls the TCXO itself through 
+        DIO3. When needed (in mode STDBY_XOSC, FS, TX and RX), the internal state 
+        machine will set DIO3 to a predefined output voltage (control through 
+        the parameter tcxoVoltage). Internally, the clock controller will wait 
+        for the 32 MHz to appear before releasing the internal state machine.
+        The time needed for the 32 MHz to appear and stabilize can be controlled 
+        through the parameter delay(23:0). If the 32 MHz from the TCXO is not 
+        detected internally at the end the delay period, the error XOSC_START_ERR 
+        will be flagged in the error controller.
+        The XOSC_START_ERR flag will be raised at POR or at wake-up from Sleep mode 
+        in a cold-start condition, when a TCXO is used. It is an expected behaviour 
+        since the chip is not yet aware of being clocked by a TCXO. The user should 
+        simply clear this flag with the ClearDeviceErrors command.
+        Delay duration = delay(23:0) * 15.625 µs
+        """
+        cmd_bytes = b'\x97'
+        cmd_bytes += bytes([tcxoVoltage & 0x07])
+        cmd_bytes += delay.to_bytes(3, 'big')
+        self._send_command(cmd_bytes)
 
     # ==== 13.4 RF Modulation and Packet-Related Functions
 
     @trace
-    def SetPacketType(self, packet_type) -> None:
+    def SetRfFrequency(self, RfFreq: int) -> None:
         """
-        13.4.2 SetPacketType
-        The command SetPacketType(...) sets the SX1261 radio in LoRa® or in FSK 
-        mode. The command SetPacketType(...) must be the first of the radio 
-        configuration sequence. The parameter for this command is PacketType.
+        This command is used to set the frequency of the RF frequency mode.
+        The LSB of Freq is equal to the PLL step which is:
+        RFfrequency = (RfFreq * Fxtal) / 2^25
+        SetRfFrequency() defines the chip frequency in FS, TX and RX modes. 
+        In RX, the required IF frequency offset is automatically configured.
+        """
+        cmd_bytes = b'\x86'
+        cmd_bytes += RfFreq.to_bytes(4, 'big')
+        self._send_command(cmd_bytes)
+
+    @trace
+    def SetPacketType(self, PacketType: int) -> None:
+        """
+        This command sets the SX1261 radio in LoRa® or in FSK mode. The command 
+        SetPacketType() must be the first of the radio configuration sequence. 
         The switch from one frame to another must be done in STDBY_RC mode.
         PacketType: 0 - GFSK, 1 - LoRa
         """
-        self._send_command(bytes([0x8A, packet_type & 0x01]), 2)
+        self._send_command(bytes([0x8A, PacketType & 0x01]))
 
     @trace
-    def GetPacketType(self):
+    def GetPacketType(self) -> Dict[str, bytes]:
         """
-        13.4.3 GetPacketType
-        The command GetPacketType() returns the current operating packet type 
-        of the radio.
-        PacketType: 0 - GFSK, 1 - LoRa
+        This command returns the current operating packet type of the radio.
         """
-        res_bytes = self._send_command(bytes.fromhex('11 00 00'), 3)
+        cmd_result = self._send_command(b'\x11\x00\x00')
         return {
-            'Status': res_bytes[1],
-            'packetType': res_bytes[2],
+            'status': cmd_result[1],
+            'packetType': cmd_result[2],
         }
+
+    @trace
+    def SetTxParams(self, power: int, RampTime: int) -> None:
+        """
+        This command sets the TX output power by using the parameter power and 
+        the TX ramping time by using the parameter RampTime. This command is 
+        available for all protocols selected.
+        The output power is defined as power in dBm in a range of
+         -17 (0xEF) to +14 (0x0E) dBm by step of 1 dB if low power PA is selected
+         -9 (0xF7) to +22 (0x16) dBm by step of 1 dB if high power PA is selected
+        Selection between high power PA and low power PA is done with the command 
+        SetPaConfig and the parameter deviceSel.
+        By default low power PA and +14 dBm are set.
+        RampTime value -> usec:
+          0x00 - 10, 0x01 - 20, 0x02 - 40, 0x03 - 80, 0x04 - 200, 0x05 - 800,
+          0x06 - 1700, 0x07 - 3400
+        """
+        cmd_bytes = b'\x8E'
+        cmd_bytes += bytes([power & 0xFF])
+        cmd_bytes += bytes([RampTime & 0x07])
+        self._send_command(cmd_bytes)
+
+    @trace
+    def SetModulationParams(self, ModParam1: int, ModParam2: int, ModParam3: int,
+         ModParam4: int, ModParam5: int, ModParam6: int, ModParam7: int, 
+         ModParam8: int) -> None:
+        """
+        This command is used to configure the modulation parameters of the radio. 
+        Depending on the packet type selected prior to calling this function, 
+        the parameters will be interpreted differently by the chip.
+        See datasheet section 13.4.5
+        """
+        cmd_bytes = b'\x8B'
+        cmd_bytes += bytes([ModParam1 & 0xFF])
+        cmd_bytes += bytes([ModParam2 & 0xFF])
+        cmd_bytes += bytes([ModParam3 & 0xFF])
+        cmd_bytes += bytes([ModParam4 & 0xFF])
+        cmd_bytes += bytes([ModParam5 & 0xFF])
+        cmd_bytes += bytes([ModParam6 & 0xFF])
+        cmd_bytes += bytes([ModParam7 & 0xFF])
+        cmd_bytes += bytes([ModParam8 & 0xFF])
+        self._send_command(cmd_bytes)
+
+    @trace
+    def SetPacketParams(self, PacketParam1: int, PacketParam2: int, PacketParam3: int,
+         PacketParam4: int, PacketParam5: int, PacketParam6: int, PacketParam7: int, 
+         PacketParam8: int, PacketParam9: int) -> None:
+        """
+        This command is used to set the parameters of the packet handling block.
+        See datasheet section 13.4.6
+        """
+        cmd_bytes = b'\x8C'
+        cmd_bytes += bytes([PacketParam1 & 0xFF])
+        cmd_bytes += bytes([PacketParam2 & 0xFF])
+        cmd_bytes += bytes([PacketParam3 & 0xFF])
+        cmd_bytes += bytes([PacketParam4 & 0xFF])
+        cmd_bytes += bytes([PacketParam5 & 0xFF])
+        cmd_bytes += bytes([PacketParam6 & 0xFF])
+        cmd_bytes += bytes([PacketParam7 & 0xFF])
+        cmd_bytes += bytes([PacketParam8 & 0xFF])
+        cmd_bytes += bytes([PacketParam9 & 0xFF])
+        self._send_command(cmd_bytes)
+
+    @trace
+    def SetCadParams(self, cadSymbolNum: int, cadDetPeak: int, cadDetMin: int,
+        cadExitMode: int, cadTimeout: int) -> None:
+        """
+        This command defines the number of symbols on which CAD operates.
+        See datasheet section 13.4.7
+        """
+        cmd_bytes = b'\x88'
+        cmd_bytes += bytes([cadSymbolNum & 0xFF])
+        cmd_bytes += bytes([cadDetPeak & 0xFF])
+        cmd_bytes += bytes([cadDetMin & 0xFF])
+        cmd_bytes += bytes([cadExitMode & 0xFF])
+        cmd_bytes += cadTimeout.to_bytes(3, 'big')
+        self._send_command(cmd_bytes)
+
+    @trace
+    def SetBufferBaseAddress(self, txBaseAddress: int, rxBaseAddress: int) -> None:
+        """
+        This command sets the base addresses in the data buffer in all modes 
+        of operations for the packet handing operation in TX and RX mode. 
+        The usage and definition of those parameters are described in 
+        the different packet type sections.
+        """
+        cmd_bytes = b'\x8F'
+        cmd_bytes += bytes([txBaseAddress & 0xFF])
+        cmd_bytes += bytes([rxBaseAddress & 0xFF])
+        self._send_command(cmd_bytes)
+
+    @trace
+    def SetLoRaSymbNumTimeout(self, SymbNum: int) -> None:
+        """
+        This command sets the number of symbols used by the modem to validate 
+        a successful reception.
+        """
+        cmd_bytes = b'\xA0'
+        cmd_bytes += bytes([SymbNum & 0xFF])
+        self._send_command(cmd_bytes)
 
     # ==== 13.5 Communication Status Information
 
     @trace
-    def GetStatus(self) -> int:
+    def GetStatus(self) -> Dict[str, bytes]:
         """
-        13.5.1 GetStatus
-        The host can retrieve chip status directly through the command GetStatus(): 
-        this command can be issued at any time and the device returns the status 
-        of the device. The command GetStatus() is not strictly necessary since 
-        device returns status information also on command bytes.
+        This command can be issued at any time and the device returns the status 
+        of the device. It is not strictly necessary since device returns status 
+        information also on command bytes.
         Bit definition:
-        7    Reserved
-        6:4  Chip Mode
+        [7]  Reserved
+        [6:4]  Chip Mode
              0  Unused
              2  STBY_RC
              3  STBY_XOSC
              4  FS
              5  RX
              6  TX
-        3:1  Command status
+        [3:1]  Command status
              0  Reserved
              2  Data is available to host
              3  Command timeout
              4  Command processing error
              5  Failure to execute command
              6  Command TX done
-        0    Reserved
+        [0]  Reserved
         """
-        res_bytes = self._send_command(b'\xC0\x00')
-        return res_bytes[1]
+        cmd_result = self._send_command(b'\xC0\x00')
+        return {
+            'status': cmd_result[1],
+        }
 
     @trace
-    def GetRxBufferStatus(self):
+    def GetRxBufferStatus(self) -> Dict[str, bytes]:
         """
-        13.5.2 GetRxBufferStatus
-        This command returns the length of the last received packet (PayloadLengthRx) 
-        and the address of the first byte received (RxStartBufferPointer). It is 
-        applicable to all modems. The address is an offset relative to the first 
-        byte of the data buffer.
+        This command returns the length of the last received packet 
+        (PayloadLengthRx) and the address of the first byte received
+        (RxStartBufferPointer). It is applicable to all modems. The address is 
+        an offset relative to the first byte of the data buffer.
         """
-        res_bytes = self._send_command(b'\x13\x00\x00\x00', 4)
+        cmd_result = self._send_command(b'\x13\x00\x00\x00')
         return {
-            'Status': res_bytes[1],
-            'PayloadLengthRx': res_bytes[2],
-            'RxStartBufferPointer': res_bytes[3],
+            'status': cmd_result[1],
+            'PayloadLengthRx': cmd_result[2],
+            'RxStartBufferPointer': cmd_result[3],
+        }
+
+    @trace
+    def GetPacketStatus(self) -> Dict[str, bytes]:
+        """
+        See datasheet section 13.5.3
+        """
+        cmd_result = self._send_command(b'\x13\x00\x00\x00\x00')
+        return {
+            'status': cmd_result[1],
+            'data': cmd_result[2:],
+        }
+
+    @trace
+    def GetRssiInst(self) -> Dict[str, bytes]:
+        """
+        This command returns the instantaneous RSSI value during reception of 
+        the packet. The command is valid for all protocols.
+        Signal power in dBm = -RssiInst/2 (dBm)
+        """
+        cmd_result = self._send_command(b'\x15\x00\x00')
+        return {
+            'status': cmd_result[1],
+            'RssiInst': cmd_result[2],
+        }
+
+    @trace
+    def GetStats(self) -> Dict[str, bytes]:
+        """
+        This command returns the number of informations received on a few last 
+        packets. The command is valid for all protocols.
+        """
+        cmd_result = self._send_command(b'\x10\x00\x00\x00\x00\x00\x00\x00')
+        return {
+            'status': cmd_result[1],
+            'data': cmd_result[2:],
+        }
+
+    @trace
+    def ResetStats(self) -> None:
+        """
+        This command resets the value read by the command GetStats.
+        """
+        self._send_command(b'\x00\x00\x00\x00\x00\x00\x00')
+
+    # ==== 13.6 Miscellaneous
+
+    @trace
+    def GetDeviceErrors(self) -> Dict[str, bytes]:
+        """
+        This commands returns possible errors flag that could occur during 
+        different chip operation.
+        OpError Bits  0 - inactive, 1 - active
+        [0] RC64k calibration failed
+        [1] RC13M calibration failed
+        [2] PLL calibration failed
+        [3] ADC calibration failed
+        [4] IMG calibration failed
+        [5] XOSC failed to start
+        [6] PLL failed to lock
+        [7] RFU
+        [8] PA ramping failed
+        [15:9] RFU
+        """
+        cmd_result = self._send_command(b'\x17\x00\x00\x00')
+        return {
+            'status': cmd_result[1],
+            'OpError': cmd_result[2:],
+        }
+
+    @trace
+    def ClearDeviceErrors(self) -> Dict[str, bytes]:
+        """
+        This commands clears all the errors recorded in the device. The errors 
+        can not be cleared independently.
+        """
+        cmd_result = self._send_command(b'\x07\x00\x00')
+        return {
+            'status': cmd_result[1],
         }
